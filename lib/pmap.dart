@@ -6,11 +6,7 @@ class _Processor<T, U> {
   U Function(T input) mapper;
 
   void process(dynamic input) async {
-    if (mapper == null) {
-      mapper = input;
-    } else {
-      sendPort.send(mapper(input));
-    }
+    sendPort.send(mapper(input));
   }
 }
 
@@ -53,13 +49,13 @@ Stream<U> pmap<T, U>(Iterable<T> list, U Function(T input) mapper,
   Iterator<T> it = list.iterator;
   for (int i = 0; i < parallel; ++i) {
     _ProcessorIsolate<T, U> isolate = _ProcessorIsolate<T, U>();
+    isolate.processor.mapper = mapper;
     isolates.add(isolate);
     isolate.spawn().then((x) async {
       isolate.receivePort.listen((dynamic result) {
         if (isolate.sendPort == null) {
           isolate.sendPort = result;
           isolate.sendPort.send(isolate.processor);
-          isolate.sendPort.send(mapper);
           if (it.moveNext()) {
             isolate.sendPort.send(it.current);
           } else {
