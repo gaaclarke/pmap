@@ -39,28 +39,30 @@ class _ProcessorIsolate<T, U> {
   }
 }
 
-Stream<U> pmap<T, U>(List<T> list, U Function(T input) mapper,
+Stream<U> pmap<T, U>(Iterable<T> list, U Function(T input) mapper,
     {int parallel = 1}) {
   List<_ProcessorIsolate<T, U>> isolates = [];
   StreamController<U> controller = StreamController<U>();
+  Iterator<T> it = list.iterator;
   for (int i = 0; i < parallel; ++i) {
     _ProcessorIsolate<T, U> isolate = _ProcessorIsolate<T, U>();
     isolates.add(isolate);
     isolate.spawn().then((x) async {
-      int count = 0;
       isolate.receivePort.listen((dynamic result) {
         if (isolate.sendPort == null) {
           isolate.sendPort = result;
           isolate.sendPort.send(isolate.processor);
           isolate.sendPort.send(mapper);
-          for (T item in list) {
-            isolate.sendPort.send(item);
-            count++;
+          if (it.moveNext()) {
+            isolate.sendPort.send(it.current);
+          } else {
+            isolate.completer.complete();
           }
         } else {
           controller.add(result);
-          count--;
-          if (count <= 0) {
+          if (it.moveNext()) {
+            isolate.sendPort.send(it.current);
+          } else {
             isolate.completer.complete();
           }
         }
@@ -81,9 +83,15 @@ Stream<U> pmap<T, U>(List<T> list, U Function(T input) mapper,
 
 int mapper(int x) => x * x;
 
+Iterable<int> countTo(int x) sync* {
+  for( int i = 0; i < x; ++i) {
+    yield i;
+  }
+}
+
 void main() async {
-  List<int> foo = [1, 2, 3, 4];
-  Stream<int> results = pmap(foo, mapper);
+  Iterable<int> foo = countTo(100);
+  Stream<int> results = pmap(foo, mapper, parallel: 2);
   await for (int value in results) {
     print(value);
   }
