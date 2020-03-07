@@ -39,6 +39,13 @@ class _ProcessorIsolate<T, U> {
   }
 }
 
+/// Operates like `Iterable.map` except performs the function `mapper` on a
+/// background isolate.  `parallel` denotes how many background isolates to use.
+///
+/// This is only useful if the computation time of `mapper` out paces the
+/// overhead in coordination.
+///
+/// Note: `mapper` must be a static method or a top-level function.
 Stream<U> pmap<T, U>(Iterable<T> list, U Function(T input) mapper,
     {int parallel = 1}) {
   List<_ProcessorIsolate<T, U>> isolates = [];
