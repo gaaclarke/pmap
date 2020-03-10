@@ -14,7 +14,7 @@ class _Processor<T, U> {
 
   void process(dynamic input) async {
     _Enumerated<T> enumeratedInput = input;
-    sendPort.send(_Enumerated(index:sendCount++, value:mapper(enumeratedInput.value)));
+    sendPort.send(_Enumerated(index:enumeratedInput.index, value:mapper(enumeratedInput.value)));
   }
 }
 

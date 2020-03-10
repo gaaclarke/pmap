@@ -1,3 +1,7 @@
+## 0.2.1
+
+* Added unit tests fixed error for parallel > 2
+
 ## 0.2.0
 
 * Made the results for parallel > 2 ordered.

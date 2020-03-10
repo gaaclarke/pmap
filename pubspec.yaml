@@ -1,6 +1,8 @@
 name: pmap
 description: Parallel map funcion
 homepage: https://github.com/gaaclarke/pmap
-version: 0.2.0
+version: 0.2.1
 environment:
   sdk: ">=2.1.0 <3.0.0"
+dev_dependencies:
+  test: ^1.11.1
