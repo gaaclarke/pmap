@@ -1,12 +1,20 @@
 import 'dart:async';
 import 'dart:isolate';
 
+class _Enumerated<T> {
+  final int index;
+  final T value;
+  _Enumerated({this.index, this.value});
+}
+
 class _Processor<T, U> {
   SendPort sendPort;
   U Function(T input) mapper;
+  int sendCount = 0;
 
   void process(dynamic input) async {
-    sendPort.send(mapper(input));
+    _Enumerated<T> enumeratedInput = input;
+    sendPort.send(_Enumerated(index:sendCount++, value:mapper(enumeratedInput.value)));
   }
 }
 
@@ -47,6 +55,9 @@ Stream<U> pmap<T, U>(Iterable<T> list, U Function(T input) mapper,
   List<_ProcessorIsolate<T, U>> isolates = [];
   StreamController<U> controller = StreamController<U>();
   Iterator<T> it = list.iterator;
+  int sendCount = 0;
+  int receiveCount = 0;
+  List<_Enumerated<U>> buffer = [];
   for (int i = 0; i < parallel; ++i) {
     _ProcessorIsolate<T, U> isolate = _ProcessorIsolate<T, U>();
     isolate.processor.mapper = mapper;
@@ -57,14 +68,27 @@ Stream<U> pmap<T, U>(Iterable<T> list, U Function(T input) mapper,
           isolate.sendPort = result;
           isolate.sendPort.send(isolate.processor);
           if (it.moveNext()) {
-            isolate.sendPort.send(it.current);
+            isolate.sendPort.send(_Enumerated(index:sendCount++, value:it.current));
           } else {
             isolate.completer.complete();
           }
         } else {
-          controller.add(result);
+          _Enumerated<U> enumeratedResult = result;
+          if (enumeratedResult.index == receiveCount) {
+            controller.add(enumeratedResult.value);
+            receiveCount++;
+          } else {
+            buffer.add(enumeratedResult);
+            int index = buffer.indexWhere((x) => x.index == receiveCount);
+            while (index >= 0) {
+              controller.add(buffer.elementAt(index).value);
+              buffer.removeAt(index);
+              receiveCount++;
+              index = buffer.indexWhere((x) => x.index == receiveCount);
+            }
+          }
           if (it.moveNext()) {
-            isolate.sendPort.send(it.current);
+            isolate.sendPort.send(_Enumerated(index:sendCount++, value:it.current));
           } else {
             isolate.completer.complete();
           }
