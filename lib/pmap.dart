@@ -1,9 +1,16 @@
 import 'dart:async';
 import 'dart:isolate';
 
-typedef Mapper<T, U> = U Function(T);
+/// The *main* process for the spawned isolates.
+void _process(_Processor processor) async {
+  final receivePort = ReceivePort();
+  processor.sendPort.send(receivePort.sendPort);
+  await for (dynamic input in receivePort) {
+    processor.process(input);
+  }
+}
 
-/// This [_Processor] manages the [sendPort] and the [mapper] in the spawned isolates
+/// This [_Processor] is given to the spawned isolates as the work basis.
 class _Processor<T, U> {
   final SendPort sendPort;
   final U Function(T input) mapper;
@@ -16,14 +23,7 @@ class _Processor<T, U> {
   _Processor(this.mapper, this.sendPort);
 }
 
-void _process(_Processor processor) async {
-  final receivePort = ReceivePort();
-  processor.sendPort.send(receivePort.sendPort);
-  await for (dynamic input in receivePort) {
-    processor.process(input);
-  }
-}
-
+/// The data to manage a spawned [Isolate]
 class _ProcessorIsolate<T, U> {
   final Isolate isolate;
   final ReceivePort receivePort;
@@ -36,15 +36,13 @@ class _ProcessorIsolate<T, U> {
   });
 
   static Future<_ProcessorIsolate<T, U>> spawn<T, U>(
-    Mapper<T, U> mapper,
-    ReceivePort receivePort,
-  ) async {
-    final isolate =
-        Isolate.spawn(_process, _Processor(mapper, receivePort.sendPort));
-    return _ProcessorIsolate(
-      isolate: await isolate,
-      receivePort: receivePort,
+      U Function(T input) mapper) async {
+    final receivePort = ReceivePort();
+    final isolate = Isolate.spawn(
+      _process,
+      _Processor(mapper, receivePort.sendPort),
     );
+    return _ProcessorIsolate(isolate: await isolate, receivePort: receivePort);
   }
 }
 
@@ -54,15 +52,16 @@ class _ProcessorIsolate<T, U> {
 /// This is only useful if the computation time of [mapper] out paces the
 /// overhead in coordination.
 ///
-/// If the order of the returned Stream elements is not important, the [inOrder]
-/// can be used.
+/// If preserving the order of the [iterable] is not required,
+/// the [preserveOrder] setting can be set to `false`, reducing memory and
+/// returning results as soon as available.
 ///
 /// Note: [mapper] must be a static method or a top-level function.
 Stream<U> pmap<T, U>(
   Iterable<T> iterable,
   U Function(T input) mapper, {
   int parallel = 1,
-  bool inOrder = true,
+  bool preserveOrder = true,
 }) {
   assert(
     parallel > 0,
@@ -70,42 +69,61 @@ Stream<U> pmap<T, U>(
   );
 
   final controller = StreamController<U>();
+
+  // If the iterable was a list, the `currentIterableIndex` would be the
+  // index of the element in `iterable.iterator`.
+  var currentIterableIndex = -1;
   final it = iterable.iterator;
+  bool nextInputElement() {
+    final hasNext = it.moveNext();
+    if (hasNext) currentIterableIndex++;
+    return hasNext;
+  }
+
+// The number of already emitted elements
   var nextPublishIndex = 0;
-  var iterableIndex = 0;
+  void publishElement(U result) {
+    controller.add(result);
+    nextPublishIndex++;
+  }
+
+// Did we emit a value for all elements gotten from iterable.
+  var allElementsPublished = false;
+
   final buffer = <int, U>{};
   final isolates = List.generate(
     parallel,
     (_) async {
-      final receivePort = ReceivePort();
-      final isolate = await _ProcessorIsolate.spawn(mapper, receivePort);
+      final isolate = await _ProcessorIsolate.spawn(mapper);
       isolate.receivePort.listen(
         (dynamic result) {
           if (isolate.sendPort == null) {
             isolate.sendPort = result as SendPort;
           } else {
             final enumeratedResult = result as MapEntry<int, U>;
-            if (inOrder) {
+            if (preserveOrder) {
               if (enumeratedResult.key == nextPublishIndex) {
-                controller.add(enumeratedResult.value);
-                nextPublishIndex++;
-                var value = buffer[nextPublishIndex];
-                while (value != null) {
-                  controller.add(value);
-                  buffer.remove(nextPublishIndex);
-                  nextPublishIndex++;
-                  value = buffer[nextPublishIndex];
+                publishElement(enumeratedResult.value);
+                var containsNext = buffer.containsKey(nextPublishIndex);
+                while (containsNext) {
+                  publishElement(buffer.remove(nextPublishIndex)
+                      as U); // The `as U` makes sure that this could be null if U is nullable, but the publishElement gets U and not U?
+                  containsNext = buffer.containsKey(nextPublishIndex);
                 }
               } else {
                 buffer[enumeratedResult.key] = enumeratedResult.value;
               }
             } else {
-              controller.add(enumeratedResult.value);
+              publishElement(enumeratedResult.value);
             }
           }
-          if (it.moveNext()) {
-            isolate.sendPort!.send(MapEntry(iterableIndex++, it.current));
+          if (nextInputElement()) {
+            // Either sendPort was not [null] to begin with or it was set as the first message
+            isolate.sendPort!.send(MapEntry(currentIterableIndex, it.current));
           } else {
+            if (currentIterableIndex == nextPublishIndex - 1) {
+              allElementsPublished = true;
+            }
             isolate.completer.complete();
           }
         },
@@ -122,6 +140,11 @@ Stream<U> pmap<T, U>(
             isolate.receivePort.close();
             isolate.isolate.kill();
           }
+          if (!allElementsPublished) {
+            throw StateError(
+                'For the $currentIterableIndex iterable elements there where only ${nextPublishIndex - 1} stream events published.\n'
+                'This means one of the isolates had issues.');
+          }
           controller.close();
         },
       ));
@@ -136,19 +159,20 @@ extension PMapIterable<T> on Iterable<T> {
   /// This is only useful if the computation time of [mapper] out paces the
   /// overhead in coordination.
   ///
-  /// If the order of the returned Stream elements is not important, the [inOrder]
-  /// can be used.
+  /// If preserving the order of the [iterable] is not required,
+  /// the [preserveOrder] setting can be set to `false`, reducing memory and
+  /// returning results as soon as available.
   ///
   /// Note: [mapper] must be a static method or a top-level function.
   Stream<U> mapParallel<U>(
-    Mapper<T, U> mapper, {
+    U Function(T input) mapper, {
     int parallel = 1,
-    bool inOrder = true,
+    bool preserveOrder = true,
   }) =>
       pmap(
         this,
         mapper,
         parallel: parallel,
-        inOrder: inOrder,
+        preserveOrder: preserveOrder,
       );
 }
