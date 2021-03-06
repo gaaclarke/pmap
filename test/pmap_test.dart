@@ -8,12 +8,19 @@ void main() {
 
   final mapped = input.map(_square).toList(growable: false);
 
-  Iterable.generate(10, (i) => i + 1).forEach(
-    (parallel) {
-      test('calculate squares in $parallel isolates', () async {
-        final pmapped = await pmap(input, _square, parallel: parallel).toList();
-        expect(pmapped, equals(mapped));
-      });
-    },
-  );
+  void squareTests(bool inOrder) => group(
+        inOrder ? 'Ordered' : 'Unordered',
+        () => Iterable.generate(10, (i) => i + 1).forEach(
+          (parallel) {
+            test('calculate squares in $parallel isolates', () async {
+              final pmapped = await input
+                  .mapParallel(_square, parallel: parallel, inOrder: inOrder)
+                  .toList();
+              expect(pmapped, unorderedEquals(mapped));
+            });
+          },
+        ),
+      );
+  squareTests(true);
+  squareTests(false);
 }

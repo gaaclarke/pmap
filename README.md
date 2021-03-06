@@ -14,7 +14,7 @@ int mapper(int x) => x * x;
 
 void main() async {
   final foo = Iterable<int>.generate(100);
-  final results = pmap(foo, mapper, parallel: 2);
+  final results = foo.mapParallel(mapper, parallel: 2);
   await results.forEach(print);
 }
 ```

@@ -1,109 +1,154 @@
 import 'dart:async';
 import 'dart:isolate';
 
-class _Enumerated<T> {
-  final int index;
-  final T value;
-  _Enumerated({this.index, this.value});
-}
+typedef Mapper<T, U> = U Function(T);
 
+/// This [_Processor] manages the [sendPort] and the [mapper] in the spawned isolates
 class _Processor<T, U> {
-  SendPort sendPort;
-  U Function(T input) mapper;
-  int sendCount = 0;
+  final SendPort /*!*/ sendPort;
+  final U Function(T input) /*!*/ mapper;
 
   void process(dynamic input) async {
-    _Enumerated<T> enumeratedInput = input;
-    sendPort.send(_Enumerated(index:enumeratedInput.index, value:mapper(enumeratedInput.value)));
+    MapEntry<int, T> enumeratedInput = input;
+    sendPort.send(MapEntry(enumeratedInput.key, mapper(enumeratedInput.value)));
   }
+
+  _Processor(this.mapper, this.sendPort);
 }
 
-void _process(SendPort sendPort) async {
-  var receivePort = new ReceivePort();
-  sendPort.send(receivePort.sendPort);
-  _Processor processor;
+void _process(_Processor processor) async {
+  final receivePort = ReceivePort();
+  processor.sendPort.send(receivePort.sendPort);
   await for (dynamic input in receivePort) {
-    if (processor == null) {
-      processor = input;
-      processor.sendPort = sendPort;
-    } else {
-      processor.process(input);
-    }
+    processor.process(input);
   }
 }
 
 class _ProcessorIsolate<T, U> {
-  ReceivePort receivePort = new ReceivePort();
-  Isolate isolate;
-  SendPort sendPort;
-  _Processor<T, U> processor = _Processor<T, U>();
-  Completer completer = Completer();
-  Future<void> spawn() async {
-    isolate = await Isolate.spawn(_process, receivePort.sendPort);
+  final Isolate isolate;
+  final ReceivePort receivePort;
+  final completer = Completer();
+  SendPort /*?*/ sendPort;
+
+  _ProcessorIsolate({
+    this.isolate,
+    this.receivePort,
+  });
+
+  static Future<_ProcessorIsolate<T, U>> spawn<T, U>(
+    Mapper<T, U> mapper,
+    ReceivePort receivePort,
+  ) async {
+    final isolate =
+        Isolate.spawn(_process, _Processor(mapper, receivePort.sendPort));
+    return _ProcessorIsolate(
+      isolate: await isolate,
+      receivePort: receivePort,
+    );
   }
 }
 
-/// Operates like `Iterable.map` except performs the function `mapper` on a
-/// background isolate.  `parallel` denotes how many background isolates to use.
+/// Operates like [Iterable.map] except performs the function [mapper] on a
+/// background isolate. [parallel] denotes how many background isolates to use.
 ///
-/// This is only useful if the computation time of `mapper` out paces the
+/// This is only useful if the computation time of [mapper] out paces the
 /// overhead in coordination.
 ///
-/// Note: `mapper` must be a static method or a top-level function.
-Stream<U> pmap<T, U>(Iterable<T> list, U Function(T input) mapper,
-    {int parallel = 1}) {
-  List<_ProcessorIsolate<T, U>> isolates = [];
-  StreamController<U> controller = StreamController<U>();
-  Iterator<T> it = list.iterator;
-  int sendCount = 0;
-  int receiveCount = 0;
-  List<_Enumerated<U>> buffer = [];
-  for (int i = 0; i < parallel; ++i) {
-    _ProcessorIsolate<T, U> isolate = _ProcessorIsolate<T, U>();
-    isolate.processor.mapper = mapper;
-    isolates.add(isolate);
-    isolate.spawn().then((x) async {
-      isolate.receivePort.listen((dynamic result) {
-        if (isolate.sendPort == null) {
-          isolate.sendPort = result;
-          isolate.sendPort.send(isolate.processor);
-          if (it.moveNext()) {
-            isolate.sendPort.send(_Enumerated(index:sendCount++, value:it.current));
+/// If the order of the returned Stream elements is not important, the [inOrder]
+/// can be used.
+///
+/// Note: [mapper] must be a static method or a top-level function.
+Stream<U> pmap<T, U>(
+  Iterable<T> iterable,
+  U Function(T input) mapper, {
+  int parallel = 1,
+  bool inOrder = true,
+}) {
+  assert(
+    parallel > 0,
+    'There need to be at least one worker, but got $parallel',
+  );
+
+  final controller = StreamController<U>();
+  final it = iterable.iterator;
+  var nextPublishIndex = 0;
+  var iterableIndex = 0;
+  final buffer = <int, U>{};
+  final isolates = List.generate(
+    parallel,
+    (_) async {
+      final receivePort = ReceivePort();
+      final isolate = await _ProcessorIsolate.spawn(mapper, receivePort);
+      isolate.receivePort.listen(
+        (dynamic result) {
+          if (isolate.sendPort == null) {
+            isolate.sendPort = result;
           } else {
-            isolate.completer.complete();
-          }
-        } else {
-          _Enumerated<U> enumeratedResult = result;
-          if (enumeratedResult.index == receiveCount) {
-            controller.add(enumeratedResult.value);
-            receiveCount++;
-          } else {
-            buffer.add(enumeratedResult);
-            int index = buffer.indexWhere((x) => x.index == receiveCount);
-            while (index >= 0) {
-              controller.add(buffer.elementAt(index).value);
-              buffer.removeAt(index);
-              receiveCount++;
-              index = buffer.indexWhere((x) => x.index == receiveCount);
+            final enumeratedResult = result as MapEntry<int, U>;
+            if (inOrder) {
+              if (enumeratedResult.key == nextPublishIndex) {
+                controller.add(enumeratedResult.value);
+                nextPublishIndex++;
+                var value = buffer[nextPublishIndex];
+                while (value != null) {
+                  controller.add(value);
+                  buffer.remove(nextPublishIndex);
+                  nextPublishIndex++;
+                  value = buffer[nextPublishIndex];
+                }
+              } else {
+                buffer[enumeratedResult.key] = enumeratedResult.value;
+              }
+            } else {
+              controller.add(enumeratedResult.value);
             }
           }
           if (it.moveNext()) {
-            isolate.sendPort.send(_Enumerated(index:sendCount++, value:it.current));
+            isolate.sendPort.send(MapEntry(iterableIndex++, it.current));
           } else {
             isolate.completer.complete();
           }
-        }
-      });
-    });
-  }
+        },
+      );
+      return isolate;
+    },
+    growable: false,
+  );
 
-  Future.wait(isolates.map((x) => x.completer.future)).then((x) {
-    for (_ProcessorIsolate isolate in isolates) {
-      isolate.receivePort.close();
-      isolate.isolate.kill();
-    }
-    controller.close();
-  });
+  Future.wait(isolates).then((isolatesSync) =>
+      Future.wait(isolatesSync.map((isolate) => isolate.completer.future)).then(
+        (_) {
+          for (final isolate in isolatesSync) {
+            isolate.receivePort.close();
+            isolate.isolate.kill();
+          }
+          controller.close();
+        },
+      ));
 
   return controller.stream;
+}
+
+extension PMapIterable<T> on Iterable<T> {
+  /// Operates like [Iterable.map] except performs the function [mapper] on a
+  /// background isolate. [parallel] denotes how many background isolates to use.
+  ///
+  /// This is only useful if the computation time of [mapper] out paces the
+  /// overhead in coordination.
+  ///
+  /// If the order of the returned Stream elements is not important, the [inOrder]
+  /// can be used.
+  ///
+  /// Note: [mapper] must be a static method or a top-level function.
+  Stream<U> mapParallel<U>(
+    Mapper<T, U> mapper, {
+    int parallel,
+    bool inOrder,
+  }) =>
+      pmap(
+        this,
+        mapper,
+        parallel: parallel ?? 1,
+        inOrder: inOrder ?? true,
+      );
 }
