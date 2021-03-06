@@ -5,8 +5,8 @@ typedef Mapper<T, U> = U Function(T);
 
 /// This [_Processor] manages the [sendPort] and the [mapper] in the spawned isolates
 class _Processor<T, U> {
-  final SendPort /*!*/ sendPort;
-  final U Function(T input) /*!*/ mapper;
+  final SendPort sendPort;
+  final U Function(T input) mapper;
 
   void process(dynamic input) async {
     MapEntry<int, T> enumeratedInput = input;
@@ -28,11 +28,11 @@ class _ProcessorIsolate<T, U> {
   final Isolate isolate;
   final ReceivePort receivePort;
   final completer = Completer();
-  SendPort /*?*/ sendPort;
+  SendPort? sendPort;
 
   _ProcessorIsolate({
-    this.isolate,
-    this.receivePort,
+    required this.isolate,
+    required this.receivePort,
   });
 
   static Future<_ProcessorIsolate<T, U>> spawn<T, U>(
@@ -82,7 +82,7 @@ Stream<U> pmap<T, U>(
       isolate.receivePort.listen(
         (dynamic result) {
           if (isolate.sendPort == null) {
-            isolate.sendPort = result;
+            isolate.sendPort = result as SendPort;
           } else {
             final enumeratedResult = result as MapEntry<int, U>;
             if (inOrder) {
@@ -104,7 +104,7 @@ Stream<U> pmap<T, U>(
             }
           }
           if (it.moveNext()) {
-            isolate.sendPort.send(MapEntry(iterableIndex++, it.current));
+            isolate.sendPort!.send(MapEntry(iterableIndex++, it.current));
           } else {
             isolate.completer.complete();
           }
@@ -142,13 +142,13 @@ extension PMapIterable<T> on Iterable<T> {
   /// Note: [mapper] must be a static method or a top-level function.
   Stream<U> mapParallel<U>(
     Mapper<T, U> mapper, {
-    int parallel,
-    bool inOrder,
+    int parallel = 1,
+    bool inOrder = true,
   }) =>
       pmap(
         this,
         mapper,
-        parallel: parallel ?? 1,
-        inOrder: inOrder ?? true,
+        parallel: parallel,
+        inOrder: inOrder,
       );
 }
