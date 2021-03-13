@@ -10,7 +10,7 @@ void _process(_Processor processor) async {
   }
 }
 
-/// This [_Processor] is given to the spawned isolates as the work basis.
+/// An object representing all the data a worker [Isolate] needs to perform its work.
 class _Processor<T, U> {
   final SendPort sendPort;
   final U Function(T input) mapper;
@@ -23,7 +23,9 @@ class _Processor<T, U> {
   _Processor(this.mapper, this.sendPort);
 }
 
-/// The data to manage a spawned [Isolate]
+/// A worker [Isolate] that will execute the `mapper` function on all items it receives.
+/// via the [receivePort].\
+/// Including all the relevant data to manage it.
 class _ProcessorIsolate<T, U> {
   final Isolate isolate;
   final ReceivePort receivePort;
@@ -47,7 +49,8 @@ class _ProcessorIsolate<T, U> {
 }
 
 /// Operates like [Iterable.map] except performs the function [mapper] on a
-/// background isolate. [parallel] denotes how many background isolates to use.
+/// background isolate. [parallel] denotes how many background isolates to use
+/// (so it must be a positive number).
 ///
 /// This is only useful if the computation time of [mapper] out paces the
 /// overhead in coordination.
@@ -80,17 +83,18 @@ Stream<U> pmap<T, U>(
     return hasNext;
   }
 
-// The number of already emitted elements
+  // The number of already emitted elements.
   var nextPublishIndex = 0;
   void publishElement(U result) {
     controller.add(result);
     nextPublishIndex++;
   }
 
-// Did we emit a value for all elements gotten from iterable.
+  // Did we emit a value for all elements gotten from iterable.
   var allElementsPublished = false;
 
-  final buffer = <int, U>{};
+  // This is late, so it does not get initialized for `preserveOrder == false`.
+  late final buffer = <int, U>{};
   final isolates = List.generate(
     parallel,
     (_) async {
@@ -154,7 +158,8 @@ Stream<U> pmap<T, U>(
 
 extension PMapIterable<T> on Iterable<T> {
   /// Operates like [Iterable.map] except performs the function [mapper] on a
-  /// background isolate. [parallel] denotes how many background isolates to use.
+  /// background isolate. [parallel] denotes how many background isolates to use
+  /// (so it must be a positive number).
   ///
   /// This is only useful if the computation time of [mapper] out paces the
   /// overhead in coordination.
